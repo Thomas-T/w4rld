@@ -103,8 +103,8 @@ fn l_orogenese_de_coeur_se_declenche_puis_s_eteint() {
 }
 
 #[test]
-fn le_relief_sature_avec_l_isostasie() {
-    // Avec isostasie, l'altitude maximale atteint un plateau (voire redescend quand l'orogenèse
+fn le_relief_sature_avec_la_relaxation() {
+    // Avec relaxation, l'altitude maximale atteint un plateau (voire redescend quand l'orogenèse
     // s'éteint) ; sans, elle continue de monter, seulement freinée par l'érosion thermique.
     let mut p = petit_monde(false);
     p.tectonic_cycles = 30;
@@ -119,4 +119,39 @@ fn le_relief_sature_avec_l_isostasie() {
     let max = |c: usize| ligne(&o, "tectonic", c).max;
     let croissance_fin = max(30) - max(20);
     assert!(croissance_fin > 0.1, "en mode legacy le relief monte encore : max(20) = {:.3}, max(30) = {:.3}", max(20), max(30));
+}
+
+/// Monde de taille réelle sans pluie : la simulation seule tient en moins d'une seconde, et le
+/// profil de subsidence thermique (échelle de 10 cellules) n'a de sens qu'à cette taille.
+fn monde_reel_sans_pluie(p: SimParams) -> SimParams {
+    SimParams { rain_cycles: 0, ..p }
+}
+
+#[test]
+fn le_fond_marin_a_du_relief_avec_la_subsidence_thermique_et_les_fosses() {
+    // Sur le même monde, la version « fond plat » (relaxation vers −0,5 partout) produit une mer
+    // uniforme ; la version finale a des dorsales, des plaines abyssales et des fosses.
+    let riche = lance(&monde_reel_sans_pluie(SimParams::default()), 2026);
+    let plat = lance(&monde_reel_sans_pluie(SimParams::flat_ocean()), 2026);
+    let r = ligne(&riche, "sea_level", 0);
+    let f = ligne(&plat, "sea_level", 0);
+    assert!(
+        r.ocean_std > 1.3 * f.ocean_std,
+        "le fond marin devrait être plus varié : σ = {:.3} (final) contre {:.3} (fond plat)",
+        r.ocean_std, f.ocean_std
+    );
+    assert!(r.min < f.min, "les fosses devraient être plus profondes : min {:.3} contre {:.3}", r.min, f.min);
+}
+
+#[test]
+fn les_fosses_respectent_le_plancher() {
+    let p = petit_monde(false);
+    let o = lance(&p, 7);
+    // Avant l'ajustement du niveau de la mer, aucune cellule océanique ne passe sous le plancher.
+    for s in o.stats.iter().filter(|s| s.phase == "tectonic") {
+        assert!(s.min >= p.ocean_floor_min - 1e-9, "cycle {} : min {:.3} sous le plancher {:.3}", s.cycle, s.min, p.ocean_floor_min);
+    }
+    // Et au moins une exécution sur quelques seeds a une vraie fosse (plus profonde que la plaine abyssale).
+    let une_fosse = (1..=5).any(|seed| ligne(&lance(&p, seed), "tectonic", p.tectonic_cycles).min < p.abyssal_depth - 0.2);
+    assert!(une_fosse, "aucune fosse plus profonde que la plaine abyssale sur 5 seeds");
 }

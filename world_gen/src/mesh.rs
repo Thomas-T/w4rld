@@ -42,6 +42,7 @@ pub fn build_graph(width: f64, height: f64, num_points: usize, rng: &mut impl Rn
             is_oceanic: false,
             moisture: 0.0,
             orogeny_age: 0.0,
+            base_level: 0.0,
         });
     }
     

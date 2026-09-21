@@ -22,8 +22,8 @@ pub struct TectonicStats {
     pub after_diff_max: f64,
     pub pos_sum: f64,
     pub neg_sum: f64,
-    /// Somme des valeurs absolues du rappel isostatique appliqué ce cycle.
-    pub isostasy_abs_sum: f64,
+    /// Somme des valeurs absolues du rappel (relaxation) appliqué ce cycle.
+    pub relaxation_abs_sum: f64,
 }
 
 /// Génère les plaques tectoniques : graines espacées puis parcours en largeur à sources multiples.
@@ -189,19 +189,87 @@ pub fn plate_component_counts(graph: &WorldGraph, num_plates: usize) -> Vec<usiz
     counts
 }
 
-/// Initialise l'élévation de base selon le type de plaque (une seule fois, au début).
-pub fn initialize_base_elevation(graph: &mut WorldGraph, params: &SimParams) {
-    for center in &mut graph.centers {
+/// Composante normale de la vitesse relative des plaques de part et d'autre d'une arête
+/// (négative = rapprochement). `None` si l'arête n'est pas une frontière de plaques exploitable.
+fn normal_velocity(graph: &WorldGraph, plates: &[Plate], edge: &crate::graph::Edge) -> Option<f64> {
+    let a = &graph.centers[edge.d0];
+    let b = &graph.centers[edge.d1];
+    if a.is_ghost || b.is_ghost || a.plate_id == b.plate_id {
+        return None;
+    }
+    let dx = b.point.0 - a.point.0;
+    let dy = b.point.1 - a.point.1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-10 {
+        return None;
+    }
+    let pa = &plates[a.plate_id];
+    let pb = &plates[b.plate_id];
+    let v_rel = (pb.velocity.0 - pa.velocity.0, pb.velocity.1 - pa.velocity.1);
+    Some((v_rel.0 * dx + v_rel.1 * dy) / len)
+}
+
+/// Niveau de base de chaque cellule. Continents : constant. Océans : profil de subsidence
+/// thermique, haut à la dorsale (frontière divergente océan-océan) et de plus en plus profond
+/// avec la distance à la dorsale la plus proche, en racine carrée, jusqu'à la plaine abyssale.
+/// La distance se propage à travers les cellules océaniques seulement : un bassin séparé de toute
+/// dorsale par un continent est vieux, donc abyssal.
+pub fn assign_base_levels(graph: &mut WorldGraph, plates: &[Plate], params: &SimParams) {
+    let n = graph.centers.len();
+    let mut dist = vec![f64::INFINITY; n];
+    let mut queue = VecDeque::new();
+    for edge in &graph.edges {
+        let a = &graph.centers[edge.d0];
+        let b = &graph.centers[edge.d1];
+        if !(a.is_oceanic && b.is_oceanic) {
+            continue;
+        }
+        if let Some(v_n) = normal_velocity(graph, plates, edge) {
+            if v_n > 0.0 {
+                for idx in [edge.d0, edge.d1] {
+                    if dist[idx].is_infinite() {
+                        dist[idx] = 0.0;
+                        queue.push_back(idx);
+                    }
+                }
+            }
+        }
+    }
+    while let Some(i) = queue.pop_front() {
+        for &nb in &graph.centers[i].neighbors {
+            let c = &graph.centers[nb];
+            if !c.is_ghost && c.is_oceanic && dist[i] + 1.0 < dist[nb] {
+                dist[nb] = dist[i] + 1.0;
+                queue.push_back(nb);
+            }
+        }
+    }
+    for (i, center) in graph.centers.iter_mut().enumerate() {
         if center.is_ghost {
             continue;
         }
-        center.elevation = if center.is_oceanic { params.base_oceanic } else { params.base_continental };
+        center.base_level = if center.is_oceanic {
+            let t = if dist[i].is_finite() { (dist[i] / params.thermal_subsidence_scale).sqrt().min(1.0) } else { 1.0 };
+            params.ridge_depth + (params.abyssal_depth - params.ridge_depth) * t
+        } else {
+            params.base_continental
+        };
+    }
+}
+
+/// Initialise l'élévation au niveau de base de chaque cellule (une seule fois, au début).
+/// Les océans partent donc déjà avec leur profil dorsale → plaine abyssale.
+pub fn initialize_base_elevation(graph: &mut WorldGraph, _params: &SimParams) {
+    for center in &mut graph.centers {
+        if !center.is_ghost {
+            center.elevation = center.base_level;
+        }
     }
     sync_corners_from_centers(graph);
 }
 
 /// Un cycle de tectonique : calcule les deltas d'élévation à partir des interactions entre plaques,
-/// les diffuse, applique l'isostasie, met à jour les âges d'orogenèse. Renvoie les statistiques.
+/// les diffuse, applique la relaxation, met à jour les âges d'orogenèse. Renvoie les statistiques.
 pub fn tectonic_step(graph: &mut WorldGraph, plates: &[Plate], params: &SimParams) -> TectonicStats {
     let mut deltas: Vec<f64> = vec![0.0; graph.centers.len()];
     let mut stats = TectonicStats::default();
@@ -215,20 +283,11 @@ pub fn tectonic_step(graph: &mut WorldGraph, plates: &[Plate], params: &SimParam
         if center_a.is_ghost || center_b.is_ghost || center_a.plate_id == center_b.plate_id {
             continue;
         }
-        let plate_a = &plates[center_a.plate_id];
-        let plate_b = &plates[center_b.plate_id];
-
-        let dx = center_b.point.0 - center_a.point.0;
-        let dy = center_b.point.1 - center_a.point.1;
-        let edge_len = (dx * dx + dy * dy).sqrt();
-        if edge_len < 1e-10 {
-            continue;
-        }
-        let normal = (dx / edge_len, dy / edge_len);
-
         // Vitesse relative projetée sur la normale : négative = rapprochement.
-        let v_rel = (plate_b.velocity.0 - plate_a.velocity.0, plate_b.velocity.1 - plate_a.velocity.1);
-        let v_n = v_rel.0 * normal.0 + v_rel.1 * normal.1;
+        let v_n = match normal_velocity(graph, plates, edge) {
+            Some(v) => v,
+            None => continue,
+        };
         let compression = (-v_n).max(0.0);
         let extension = v_n.max(0.0);
 
@@ -310,18 +369,28 @@ pub fn tectonic_step(graph: &mut WorldGraph, plates: &[Plate], params: &SimParam
     diffuse_deltas(graph, &mut deltas, params);
     stats.after_diff_max = deltas.iter().fold(0.0, |m, d| m.max(d.abs()));
 
-    // 4. Application : delta tectonique + rappel isostatique vers le niveau de base de la plaque.
+    // 4. Application : delta tectonique + relaxation vers le niveau de base de la cellule.
+    //    Topographie dynamique : une cellule océanique en subsidence active (fosse, rift) est
+    //    soutenue par le forçage lui-même, sa relaxation est suspendue en proportion. Les fonds
+    //    ne descendent pas sous le plancher.
     for (idx, delta) in deltas.iter().enumerate() {
         let center = &mut graph.centers[idx];
         if center.is_ghost {
             continue;
         }
-        let base = if center.is_oceanic { params.base_oceanic } else { params.base_continental };
-        let isostasy = -params.isostasy_k * (center.elevation - base) * params.dt;
-        stats.isostasy_abs_sum += isostasy.abs();
-        center.elevation += delta + isostasy;
+        let forcing = if center.is_oceanic && *delta < 0.0 {
+            (delta.abs() / params.forcing_exemption_scale).min(1.0)
+        } else {
+            0.0
+        };
+        let relaxation = -params.relaxation_k * (1.0 - forcing) * (center.elevation - center.base_level) * params.dt;
+        stats.relaxation_abs_sum += relaxation.abs();
+        center.elevation += delta + relaxation;
+        if center.is_oceanic && center.elevation < params.ocean_floor_min {
+            center.elevation = params.ocean_floor_min;
+        }
 
-        // L'âge d'orogenèse ne compte que la surrection tectonique, pas l'isostasie.
+        // L'âge d'orogenèse ne compte que la surrection tectonique, pas la relaxation.
         if *delta > 0.001 && center.orogeny_age <= params.max_orogeny_age {
             center.orogeny_age += params.dt;
         }

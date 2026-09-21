@@ -11,6 +11,7 @@ pub struct Center {
     pub is_oceanic: bool,  // Type de plaque (océanique ou continentale)
     pub moisture: f64,     // Humidité (pour la simulation)
     pub orogeny_age: f64,  // Âge de l'orogenèse active (0 = inactive, >0 = active)
+    pub base_level: f64,   // Niveau de base vers lequel la relaxation rappelle l'élévation
 }
 
 #[derive(Debug, Clone)]

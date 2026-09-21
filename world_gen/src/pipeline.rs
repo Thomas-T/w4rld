@@ -3,7 +3,8 @@ use crate::hydrology::{apply_hydraulic_erosion, apply_thermal_erosion, simulate_
 use crate::mesh::build_graph;
 use crate::params::SimParams;
 use crate::tectonics::{
-    adjust_sea_level, generate_plates, initialize_base_elevation, tectonic_step, Plate, TectonicStats,
+    adjust_sea_level, assign_base_levels, generate_plates, initialize_base_elevation, tectonic_step, Plate,
+    TectonicStats,
 };
 use rand::{rngs::StdRng, SeedableRng};
 use std::time::{Duration, Instant};
@@ -24,17 +25,20 @@ pub struct CycleStats {
     pub zero_corners: usize,
     pub underwater_corners: usize,
     pub land_ratio: f64,
+    /// Écart-type des élévations des centres immergés : le relief du fond marin.
+    pub ocean_std: f64,
 }
 
 impl CycleStats {
     pub const CSV_HEADER: &'static str =
-        "phase,cycle,min,max,mean,std,convergent,divergent,core_edges,zero_corners,underwater_corners,land_ratio";
+        "phase,cycle,min,max,mean,std,convergent,divergent,core_edges,zero_corners,underwater_corners,land_ratio,ocean_std";
 
     pub fn csv_row(&self) -> String {
         format!(
-            "{},{},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.4}",
+            "{},{},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{},{:.4},{:.4}",
             self.phase, self.cycle, self.min, self.max, self.mean, self.std, self.convergent,
-            self.divergent, self.core_edges, self.zero_corners, self.underwater_corners, self.land_ratio
+            self.divergent, self.core_edges, self.zero_corners, self.underwater_corners, self.land_ratio,
+            self.ocean_std
         )
     }
 }
@@ -79,6 +83,13 @@ pub fn measure(graph: &WorldGraph, phase: &'static str, cycle: usize, t: Option<
     let mean = elevations.iter().sum::<f64>() / n;
     let std = (elevations.iter().map(|e| (e - mean).powi(2)).sum::<f64>() / n).sqrt();
     let land = elevations.iter().filter(|&&e| e > 0.0).count();
+    let ocean: Vec<f64> = elevations.iter().cloned().filter(|&e| e < 0.0).collect();
+    let ocean_std = if ocean.len() > 1 {
+        let m = ocean.iter().sum::<f64>() / ocean.len() as f64;
+        (ocean.iter().map(|e| (e - m).powi(2)).sum::<f64>() / ocean.len() as f64).sqrt()
+    } else {
+        0.0
+    };
     CycleStats {
         phase,
         cycle,
@@ -92,6 +103,7 @@ pub fn measure(graph: &WorldGraph, phase: &'static str, cycle: usize, t: Option<
         zero_corners: graph.corners.iter().filter(|c| c.elevation == 0.0).count(),
         underwater_corners: graph.corners.iter().filter(|c| c.elevation < 0.0).count(),
         land_ratio: land as f64 / n,
+        ocean_std,
     }
 }
 
@@ -122,6 +134,7 @@ where
     timings.plates = t.elapsed();
     frame("step2_plates", &graph, &plates, &mut timings);
 
+    assign_base_levels(&mut graph, &plates, params);
     initialize_base_elevation(&mut graph, params);
     stats.push(measure(&graph, "base", 0, None));
     frame("step3_base_elevation", &graph, &plates, &mut timings);

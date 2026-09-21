@@ -14,7 +14,8 @@ USAGE : world_gen [OPTIONS]
 OPTIONS
   --seed N            graine du générateur (défaut : 2026). Même seed = même monde.
   --out DIR           dossier de sortie (défaut : out/)
-  --legacy            reproduit les défauts de l'épisode 1 (seuil absolu, érosion sous l'eau, pas d'isostasie)
+  --legacy            reproduit les défauts de l'épisode 1 (seuil absolu, érosion sous l'eau, pas de relaxation)
+  --flat-ocean        version intermédiaire de l'épisode 2 : fond océanique plat, relaxation partout
   --grayscale         rendu debug en niveaux de gris avec liseré côtier
   --points N          nombre de cellules (défaut : 10000)
   --plates N          nombre de plaques (défaut : 50)
@@ -36,6 +37,7 @@ struct Cli {
 fn parse_cli() -> Cli {
     let mut cli = Cli { seed: 2026, out: PathBuf::from("out"), params: SimParams::default(), images: true, gif: true };
     let mut legacy = false;
+    let mut flat_ocean = false;
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     let next = |i: &mut usize, flag: &str| -> String {
@@ -50,6 +52,7 @@ fn parse_cli() -> Cli {
             "--seed" => cli.seed = next(&mut i, "--seed").parse().expect("--seed attend un entier"),
             "--out" => cli.out = PathBuf::from(next(&mut i, "--out")),
             "--legacy" => legacy = true,
+            "--flat-ocean" => flat_ocean = true,
             "--grayscale" => cli.params.grayscale = true,
             "--points" => cli.params.num_points = next(&mut i, "--points").parse().expect("--points attend un entier"),
             "--plates" => cli.params.num_plates = next(&mut i, "--plates").parse().expect("--plates attend un entier"),
@@ -68,9 +71,9 @@ fn parse_cli() -> Cli {
         }
         i += 1;
     }
-    if legacy {
+    if legacy || flat_ocean {
         let grayscale = cli.params.grayscale;
-        let mut p = SimParams::legacy();
+        let mut p = if legacy { SimParams::legacy() } else { SimParams::flat_ocean() };
         p.grayscale = grayscale;
         p.num_points = cli.params.num_points;
         p.num_plates = cli.params.num_plates;
@@ -89,11 +92,12 @@ fn main() {
     println!(
         "w4rld — seed {} · {} cellules · {} plaques · {} cycles tectoniques · {} cycles de pluie{}",
         cli.seed, params.num_points, params.num_plates, params.tectonic_cycles, params.rain_cycles,
-        if params.legacy { " · MODE LEGACY (défauts de l'épisode 1)" } else { "" }
+        if params.legacy { " · MODE LEGACY (défauts de l'épisode 1)" } else if params.ridge_depth == params.abyssal_depth { " · FOND OCÉANIQUE PLAT" } else { "" }
     );
     println!(
-        "seuil d'orogenèse de cœur : {:.3} (compression max possible {:.3}) · isostasie k = {}",
-        params.core_threshold_abs(), 2.0 * params.plate_speed_max, params.isostasy_k
+        "seuil d'orogenèse de cœur : {:.3} (compression max possible {:.3}) · relaxation k = {} · fond : dorsale {} → abysses {} · plancher {}",
+        params.core_threshold_abs(), 2.0 * params.plate_speed_max, params.relaxation_k,
+        params.ridge_depth, params.abyssal_depth, params.ocean_floor_min
     );
 
     let mut png_files: Vec<String> = Vec::new();
@@ -126,8 +130,8 @@ fn main() {
                 s.cycle, s.min, s.max, s.zero_corners, s.underwater_corners, 100.0 * s.land_ratio
             ),
             other => println!(
-                "  {:<9} : min {:+.3} max {:+.3} moy {:+.3} σ {:.3} | terres {:.1} %",
-                other, s.min, s.max, s.mean, s.std, 100.0 * s.land_ratio
+                "  {:<9} : min {:+.3} max {:+.3} moy {:+.3} σ {:.3} | terres {:.1} % | σ fond marin {:.3}",
+                other, s.min, s.max, s.mean, s.std, 100.0 * s.land_ratio, s.ocean_std
             ),
         }
     }
@@ -162,7 +166,7 @@ fn main() {
     );
     let last = outcome.stats.last().expect("au moins une mesure");
     println!(
-        "final      : terres {:.1} % · coins à 0,0 : {} · sous l'eau : {} · {} PNG dans {} · stats.csv",
-        100.0 * last.land_ratio, last.zero_corners, last.underwater_corners, png_files.len(), cli.out.display()
+        "final      : terres {:.1} % · coins à 0,0 : {} · sous l'eau : {} · σ fond marin {:.3} · min {:+.3} · {} PNG dans {} · stats.csv",
+        100.0 * last.land_ratio, last.zero_corners, last.underwater_corners, last.ocean_std, last.min, png_files.len(), cli.out.display()
     );
 }
