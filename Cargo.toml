@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "world_core",
+    "world_gen",
+]
+resolver = "2"
+

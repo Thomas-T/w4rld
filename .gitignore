@@ -1,0 +1,9 @@
+# artefacts de build
+/target/
+**/target/
+
+# sorties générées par world_gen (régénérées à chaque exécution, monde différent à chaque fois)
+/step*.png
+/world_evolution.gif
+/world_gen/step*.png
+/world_gen/world_evolution.gif
