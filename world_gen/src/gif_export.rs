@@ -26,7 +26,6 @@ pub fn create_gif_from_pngs(png_files: &[String], output_path: &str, delay: u16)
         // Dessine un rectangle semi-transparent pour le fond du texte (en bas à gauche)
         let text_y = (height as i32) - 20; // 20 pixels du bas
         let text_x = 10; // 10 pixels de la gauche
-        let text_height = 15;
         let text_width = (filename.len() * 7).min(500); // Estimation de la largeur
         
         // Dessine un rectangle semi-transparent pour le fond
@@ -52,7 +51,10 @@ pub fn create_gif_from_pngs(png_files: &[String], output_path: &str, delay: u16)
         // Convertit en format GIF (palette de couleurs)
         // from_rgba nécessite un slice mutable, on doit convertir le buffer
         let mut rgba_data = img.into_raw();
-        let mut frame = gif::Frame::from_rgba(width as u16, height as u16, &mut rgba_data);
+        // Épisode 2 : `from_rgba` quantifie la palette à la vitesse 1 (la plus lente, ~1 s par
+        // image 1000×1000) : c'était 98 des 103 secondes du programme. À 10, la différence visuelle
+        // est imperceptible sur ces rendus et l'encodage passe sous les 10 secondes.
+        let mut frame = gif::Frame::from_rgba_speed(width as u16, height as u16, &mut rgba_data, 10);
         frame.delay = delay;
         frames.push(frame);
     }
@@ -76,7 +78,7 @@ pub fn create_gif_from_pngs(png_files: &[String], output_path: &str, delay: u16)
 fn draw_text_on_image(img: &mut image::RgbaImage, text: &str, x: i32, y: i32, color: Rgba<u8>) {
     // Police bitmap simple 5x7 pixels par caractère
     let char_width = 6;
-    let char_height = 7;
+    let _char_height = 7;
     let mut current_x = x;
     
     // Table de caractères bitmap simple (5x7)

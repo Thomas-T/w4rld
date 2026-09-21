@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-world_core = { path = "../world_core" }
 rand = "0.8"
 delaunator = "1.0"
 image = "0.24"

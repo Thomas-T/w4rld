@@ -190,23 +190,6 @@ pub fn simulate_rain(graph: &mut WorldGraph, params: &SimParams) {
         }
     }
     
-    // Met à jour aussi les corners avec la moyenne des centers qui les touchent
-    for corner in &mut graph.corners {
-        let mut sum_moisture = 0.0;
-        let mut count = 0;
-        for &touch_idx in &corner.touches {
-            if let Some(touch_center) = graph.centers.get(touch_idx) {
-                if !touch_center.is_ghost {
-                    sum_moisture += touch_center.moisture;
-                    count += 1;
-                }
-            }
-        }
-        if count > 0 {
-            corner.moisture = sum_moisture / count as f64;
-        }
-    }
-    
     // Met à jour la moisture des corners avec la moyenne des centers qui les touchent
     for corner in &mut graph.corners {
         if corner.touches.is_empty() {
@@ -301,7 +284,15 @@ fn erode(graph: &mut WorldGraph, river_flow: &[f64], downslopes: &[Option<usize>
     for corner_idx in 0..graph.corners.len() {
         let corner = &graph.corners[corner_idx];
         let flow = river_flow[corner_idx];
-        
+
+        // Correctif épisode 2 : l'érosion fluviale ne s'applique qu'à la terre émergée.
+        // Sous l'eau, le plafond `corner_elevation * 0.1` devenait négatif et le `.max(0.0)`
+        // plus bas remontait le coin exactement au niveau de la mer (3 327 coins mesurés).
+        // En mode `legacy`, on conserve ce comportement pour comparaison.
+        if !params.legacy && corner.elevation <= 0.0 {
+            continue;
+        }
+
         // Si le flux est faible, pas d'érosion significative
         if flow < 0.1 {
             continue;

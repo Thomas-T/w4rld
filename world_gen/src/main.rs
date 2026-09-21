@@ -1,131 +1,168 @@
-mod graph;
-mod mesh;
-mod drawer;
-mod tectonics;
-mod hydrology;
-mod gif_export;
-mod params;
+use std::fs;
+use std::path::PathBuf;
 
-use mesh::build_graph;
-use drawer::{draw_mesh, draw_plates, draw_elevation_with_params};
-use tectonics::{generate_plates, tectonic_step, initialize_base_elevation, adjust_sea_level};
-use hydrology::{apply_thermal_erosion, simulate_rain, apply_hydraulic_erosion};
-use gif_export::create_gif_from_pngs;
-use params::SimParams;
+use world_gen::drawer::{draw_elevation_with_params, draw_mesh, draw_plates};
+use world_gen::gif_export::create_gif_from_pngs;
+use world_gen::params::SimParams;
+use world_gen::pipeline::{run, CycleStats};
+
+const USAGE: &str = "\
+w4rld — génération procédurale de monde
+
+USAGE : world_gen [OPTIONS]
+
+OPTIONS
+  --seed N            graine du générateur (défaut : 2026). Même seed = même monde.
+  --out DIR           dossier de sortie (défaut : out/)
+  --legacy            reproduit les défauts de l'épisode 1 (seuil absolu, érosion sous l'eau, pas d'isostasie)
+  --grayscale         rendu debug en niveaux de gris avec liseré côtier
+  --points N          nombre de cellules (défaut : 10000)
+  --plates N          nombre de plaques (défaut : 50)
+  --tectonic-cycles N (défaut : 40)
+  --rain-cycles N     (défaut : 40)
+  --no-images         simule sans dessiner (mesure de performance)
+  --no-gif            dessine les PNG mais pas le GIF
+  -h, --help
+";
+
+struct Cli {
+    seed: u64,
+    out: PathBuf,
+    params: SimParams,
+    images: bool,
+    gif: bool,
+}
+
+fn parse_cli() -> Cli {
+    let mut cli = Cli { seed: 2026, out: PathBuf::from("out"), params: SimParams::default(), images: true, gif: true };
+    let mut legacy = false;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut i = 0;
+    let next = |i: &mut usize, flag: &str| -> String {
+        *i += 1;
+        args.get(*i).cloned().unwrap_or_else(|| {
+            eprintln!("option {} : valeur manquante", flag);
+            std::process::exit(2)
+        })
+    };
+    while i < args.len() {
+        match args[i].as_str() {
+            "--seed" => cli.seed = next(&mut i, "--seed").parse().expect("--seed attend un entier"),
+            "--out" => cli.out = PathBuf::from(next(&mut i, "--out")),
+            "--legacy" => legacy = true,
+            "--grayscale" => cli.params.grayscale = true,
+            "--points" => cli.params.num_points = next(&mut i, "--points").parse().expect("--points attend un entier"),
+            "--plates" => cli.params.num_plates = next(&mut i, "--plates").parse().expect("--plates attend un entier"),
+            "--tectonic-cycles" => cli.params.tectonic_cycles = next(&mut i, "--tectonic-cycles").parse().expect("entier attendu"),
+            "--rain-cycles" => cli.params.rain_cycles = next(&mut i, "--rain-cycles").parse().expect("entier attendu"),
+            "--no-images" => cli.images = false,
+            "--no-gif" => cli.gif = false,
+            "-h" | "--help" => {
+                print!("{}", USAGE);
+                std::process::exit(0)
+            }
+            other => {
+                eprintln!("option inconnue : {}\n\n{}", other, USAGE);
+                std::process::exit(2)
+            }
+        }
+        i += 1;
+    }
+    if legacy {
+        let grayscale = cli.params.grayscale;
+        let mut p = SimParams::legacy();
+        p.grayscale = grayscale;
+        p.num_points = cli.params.num_points;
+        p.num_plates = cli.params.num_plates;
+        p.tectonic_cycles = cli.params.tectonic_cycles;
+        p.rain_cycles = cli.params.rain_cycles;
+        cli.params = p;
+    }
+    cli
+}
 
 fn main() {
-    let width = 1000.0;
-    let height = 1000.0;
-    let num_points = 10000;
-    let num_plates = 50;
-    
-    // Paramètres de simulation centralisés
-    let params = SimParams::default();
-    
-    // Liste des fichiers PNG pour le GIF
-    let mut png_files = Vec::new();
-    
-    println!("Génération du graphe Voronoï...");
-    let mut graph = build_graph(width, height, num_points);
-    
-    println!("Dessin du mesh initial...");
-    draw_mesh(&graph, "step1_mesh.png");
-    png_files.push("step1_mesh.png".to_string());
-    
-    println!("Génération de {} plaques tectoniques...", num_plates);
-    let plates = generate_plates(&mut graph, num_plates, &params);
-    
-    println!("Dessin des plaques...");
-    draw_plates(&graph, &plates, "step2_plates.png");
-    png_files.push("step2_plates.png".to_string());
-    
-    println!("Initialisation de l'élévation de base...");
-    initialize_base_elevation(&mut graph);
-    
-    // PNG après l'élévation de base
-    let filename = "step3_base_elevation.png";
-    draw_elevation_with_params(&graph, filename, Some(&params), 0.0);
-    png_files.push(filename.to_string());
-    println!("  → {}", filename);
-    
-    println!("Simulation de croissance tectonique ({} cycles)...", params.tectonic_cycles);
-    for cycle in 0..params.tectonic_cycles {
-        // Étape incrémentale de tectonique
-        tectonic_step(&mut graph, &plates, &params);
-        
-        // Érosion thermique
-        if params.thermal_passes_per_cycle > 0 {
-            apply_thermal_erosion(&mut graph, &params);
+    let cli = parse_cli();
+    fs::create_dir_all(&cli.out).expect("impossible de créer le dossier de sortie");
+    let params = cli.params.clone();
+
+    println!(
+        "w4rld — seed {} · {} cellules · {} plaques · {} cycles tectoniques · {} cycles de pluie{}",
+        cli.seed, params.num_points, params.num_plates, params.tectonic_cycles, params.rain_cycles,
+        if params.legacy { " · MODE LEGACY (défauts de l'épisode 1)" } else { "" }
+    );
+    println!(
+        "seuil d'orogenèse de cœur : {:.3} (compression max possible {:.3}) · isostasie k = {}",
+        params.core_threshold_abs(), 2.0 * params.plate_speed_max, params.isostasy_k
+    );
+
+    let mut png_files: Vec<String> = Vec::new();
+    let out_dir = cli.out.clone();
+    let images = cli.images;
+    let render_params = params.clone();
+    let outcome = run(&params, cli.seed, |name, graph, plates| {
+        if !images {
+            return;
         }
-        
-        // Logs de debug : min/max/mean elevation après tectonique
-        let elevations: Vec<f64> = graph.centers.iter()
-            .filter(|c| !c.is_ghost)
-            .map(|c| c.elevation)
-            .collect();
-        if !elevations.is_empty() {
-            let min_elev = elevations.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-            let max_elev = elevations.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-            let mean_elev = elevations.iter().sum::<f64>() / elevations.len() as f64;
-            let variance = elevations.iter().map(|&e| (e - mean_elev).powi(2)).sum::<f64>() / elevations.len() as f64;
-            let stddev = variance.sqrt();
-            println!("  Cycle {}: elev min={:.3} max={:.3} mean={:.3} stddev={:.3}", 
-                     cycle + 1, min_elev, max_elev, mean_elev, stddev);
+        let path = out_dir.join(format!("{}.png", name));
+        let path_str = path.to_string_lossy().to_string();
+        match name {
+            "step1_mesh" => draw_mesh(graph, &path_str),
+            "step2_plates" => draw_plates(graph, plates, &path_str),
+            _ => draw_elevation_with_params(graph, &path_str, Some(&render_params), 0.0),
         }
-        
-        // PNG à chaque cycle
-        let filename = format!("step4_tectonic_cycle_{:02}.png", cycle + 1);
-        draw_elevation_with_params(&graph, &filename, Some(&params), 0.0);
-        png_files.push(filename);
-        
-        if cycle % 5 == 0 && cycle > 0 {
-            println!("  → Cycle {}/{}...", cycle + 1, params.tectonic_cycles);
+        png_files.push(path_str);
+    });
+
+    // Log lisible, une ligne par étape.
+    for s in &outcome.stats {
+        match s.phase {
+            "tectonic" => println!(
+                "  tecto {:>2} : min {:+.3} max {:+.3} moy {:+.3} σ {:.3} | conv {} div {} cœur {}",
+                s.cycle, s.min, s.max, s.mean, s.std, s.convergent, s.divergent, s.core_edges
+            ),
+            "hydro" => println!(
+                "  pluie {:>2} : min {:+.3} max {:+.3} | coins à 0,0 : {} | sous l'eau : {} | terres {:.1} %",
+                s.cycle, s.min, s.max, s.zero_corners, s.underwater_corners, 100.0 * s.land_ratio
+            ),
+            other => println!(
+                "  {:<9} : min {:+.3} max {:+.3} moy {:+.3} σ {:.3} | terres {:.1} %",
+                other, s.min, s.max, s.mean, s.std, 100.0 * s.land_ratio
+            ),
         }
     }
-    
-    println!("Ajustement du niveau de la mer...");
-    adjust_sea_level(&mut graph, params.land_ratio);
-    
-    // PNG après ajustement du niveau de la mer (sea_level = 0.0 après adjust_sea_level)
-    let filename = "step5_after_sea_level.png";
-    draw_elevation_with_params(&graph, filename, Some(&params), 0.0);
-    png_files.push(filename.to_string());
-    println!("  → {}", filename);
-    
-    println!("Simulation de l'érosion hydraulique ({} cycles)...", params.rain_cycles);
-    for cycle in 0..params.rain_cycles {
-        simulate_rain(&mut graph, &params);
-        apply_hydraulic_erosion(&mut graph, &params);
-        
-        // PNG à chaque cycle
-        let filename = format!("step6_hydraulic_cycle_{:02}.png", cycle + 1);
-        draw_elevation_with_params(&graph, &filename, Some(&params), 0.0);
-        png_files.push(filename);
-        
-        if cycle % 2 == 0 {
-            println!("  Cycle {}/{}...", cycle + 1, params.rain_cycles);
+
+    // CSV des statistiques.
+    let csv_path = cli.out.join("stats.csv");
+    let mut csv = String::from(CycleStats::CSV_HEADER);
+    for s in &outcome.stats {
+        csv.push('\n');
+        csv.push_str(&s.csv_row());
+    }
+    fs::write(&csv_path, csv).expect("écriture de stats.csv");
+
+    let mut gif_secs = 0.0;
+    if cli.images && cli.gif {
+        let t = std::time::Instant::now();
+        let gif_path = cli.out.join("world_evolution.gif").to_string_lossy().to_string();
+        match create_gif_from_pngs(&png_files, &gif_path, 10) {
+            Ok(_) => println!("GIF : {}", gif_path),
+            Err(e) => eprintln!("GIF : erreur {}", e),
         }
+        gif_secs = t.elapsed().as_secs_f64();
     }
-    
-    // PNG final
-    let filename = "step7_final_world.png";
-    draw_elevation_with_params(&graph, filename, Some(&params), 0.0);
-    png_files.push(filename.to_string());
-    println!("  → {}", filename);
-    
-    println!("Création du GIF animé...");
-    match create_gif_from_pngs(&png_files, "world_evolution.gif", 100) {
-        Ok(_) => println!("  → world_evolution.gif créé avec succès!"),
-        Err(e) => eprintln!("  Erreur lors de la création du GIF: {}", e),
-    }
-    
-    println!("\nImages sauvegardées:");
-    println!("  - step1_mesh.png");
-    println!("  - step2_plates.png");
-    println!("  - step3_base_elevation.png");
-    println!("  - step4_tectonic_cycle_01.png à step4_tectonic_cycle_30.png (30 images)");
-    println!("  - step5_after_sea_level.png");
-    println!("  - step6_hydraulic_cycle_01.png à step6_hydraulic_cycle_10.png (10 images)");
-    println!("  - step7_final_world.png");
-    println!("  - world_evolution.gif (animation de toutes les étapes)");
+
+    let t = &outcome.timings;
+    println!();
+    println!("empreinte  : {:016x}", outcome.fingerprint);
+    println!(
+        "temps      : maillage {:.2}s · plaques {:.2}s · tectonique {:.2}s · hydrologie {:.2}s · rendu PNG {:.2}s · GIF {:.2}s · total {:.2}s",
+        t.mesh.as_secs_f64(), t.plates.as_secs_f64(), t.tectonics.as_secs_f64(),
+        t.hydrology.as_secs_f64(), t.render.as_secs_f64(), gif_secs, t.total.as_secs_f64() + gif_secs
+    );
+    let last = outcome.stats.last().expect("au moins une mesure");
+    println!(
+        "final      : terres {:.1} % · coins à 0,0 : {} · sous l'eau : {} · {} PNG dans {} · stats.csv",
+        100.0 * last.land_ratio, last.zero_corners, last.underwater_corners, png_files.len(), cli.out.display()
+    );
 }

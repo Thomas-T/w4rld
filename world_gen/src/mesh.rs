@@ -3,9 +3,8 @@ use delaunator::{triangulate, Point};
 use rand::Rng;
 
 /// Construit un graphe Voronoï à partir d'un maillage de Delaunay
-pub fn build_graph(width: f64, height: f64, num_points: usize) -> WorldGraph {
-    // Génère des points aléatoires
-    let mut rng = rand::thread_rng();
+pub fn build_graph(width: f64, height: f64, num_points: usize, rng: &mut impl Rng) -> WorldGraph {
+    // Génère des points aléatoires (générateur injecté : même seed, même monde)
     let mut points: Vec<Point> = Vec::new();
     
     for _ in 0..num_points {
@@ -34,11 +33,9 @@ pub fn build_graph(width: f64, height: f64, num_points: usize) -> WorldGraph {
         // Les 4 derniers points sont les points fantômes (marges)
         let is_ghost = i >= num_points;
         graph.centers.push(Center {
-            index: i,
             point: (point.x, point.y),
             corners: vec![],
             neighbors: vec![],
-            borders: vec![],
             plate_id: 0,
             is_ghost,
             elevation: 0.0,
@@ -66,7 +63,6 @@ pub fn build_graph(width: f64, height: f64, num_points: usize) -> WorldGraph {
         
         let corner_index = graph.corners.len();
         graph.corners.push(Corner {
-            index: corner_index,
             point: (circumcenter.x, circumcenter.y),
             touches: vec![i0, i1, i2],
             adjacent: vec![],
@@ -107,9 +103,7 @@ pub fn build_graph(width: f64, height: f64, num_points: usize) -> WorldGraph {
         let v0 = tri_start;
         let v1 = tri_end;
         
-        let edge_index = graph.edges.len();
         graph.edges.push(Edge {
-            index: edge_index,
             d0,
             d1,
             v0,

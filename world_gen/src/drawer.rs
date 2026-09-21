@@ -128,15 +128,11 @@ pub fn draw_plates(graph: &WorldGraph, _plates: &[Plate], filename: &str) {
     img.save(filename).unwrap();
 }
 
-pub fn draw_elevation(graph: &WorldGraph, filename: &str) {
-    draw_elevation_with_params(graph, filename, None, 0.0)
-}
-
 pub fn draw_elevation_with_params(graph: &WorldGraph, filename: &str, params: Option<&SimParams>, sea_level: f64) {
     let mut img: RgbImage = ImageBuffer::new(graph.width as u32, graph.height as u32);
     
     // Détermine si on utilise le mode grayscale
-    let use_grayscale = params.map(|p| p.debug_grayscale).unwrap_or(false);
+    let use_grayscale = params.map(|p| p.grayscale).unwrap_or(false);
     let coastline_color = params.map(|p| p.coastline_blue_rgb).unwrap_or((0, 120, 255));
     
     // Calcule min/max elevation pour la normalisation grayscale
