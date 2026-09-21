@@ -6,7 +6,7 @@ et un GIF animé de toute l'évolution.
 
 ![Évolution du monde en 85 étapes](docs/evolution-500px.gif)
 
-Projet du soir, écrit en deux jours (janvier 2026). Il est raconté dans l'article
+Projet du soir, écrit en deux jours (janvier 2026), pour pratiquer Rust sur un vrai sujet et retrouver le plaisir des mondes générés à la Dwarf Fortress. Il est raconté dans l'article
 **« Générer un monde en 2 254 lignes de Rust »** sur [Binary Imothep](https://medium.com/binary-imothep)
 (série *Jeux & simulation*, épisode 1). Le tag [`blog/jeux-simulation-1`](../../tree/blog/jeux-simulation-1)
 fige la version décrite dans l'article, **défauts compris** (voir plus bas).
@@ -59,6 +59,13 @@ let zero = graph.corners.iter().filter(|c| c.elevation == 0.0).count();
 let neg  = graph.corners.iter().filter(|c| c.elevation < 0.0).count();
 println!("coins à 0.0 = {}  sous l'eau = {}  total = {}", zero, neg, graph.corners.len());
 ```
+
+## Note sur la fabrication
+
+Ce code a été écrit avec un assistant IA, sous ma direction : je relis, je corrige, je demande des
+modifications, mais je laisse l'IA produire le gros du travail. C'est ce qui me permet d'aller vite et
+d'essayer des choses nouvelles, ce que j'adore faire. L'article qui décrit ce dépôt est publié sur
+[Binary Imothep](https://medium.com/binary-imothep) avec la même note.
 
 ## Licence
 
